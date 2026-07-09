@@ -16,9 +16,12 @@ limiting**, observability and graceful operation.
 - **Per-client rate limiting** — token bucket with two interchangeable
   backends: **in-memory** (single instance) and **Redis + Lua** (distributed).
   Returns `429` with `Retry-After` and `X-RateLimit-*` headers.
+- **Resilience** — per-upstream **circuit breaker** (fails fast with `503`
+  while a backend is unhealthy) and bounded **retries with exponential
+  backoff** for safe requests.
 - **Observability** — Prometheus metrics at `/metrics`, structured `slog`
   logging with request IDs, `/healthz` liveness endpoint.
-- **Resilient operation** — panic recovery, upstream errors surfaced as `502`,
+- **Robust operation** — panic recovery, upstream errors surfaced as `502`,
   a rate-limiter outage fails *open*, graceful shutdown on SIGTERM.
 - **Self-contained demo** — mock upstream + `docker-compose` bring the whole
   stack (gateway + Redis + upstream) up with one command.
@@ -35,6 +38,7 @@ Client ──▶ Gateway ──────────────────�
              ├─ auth          X-API-Key → client + plan (else 401)
              ├─ rate limit    token bucket (memory | redis) → 429
              └─ proxy         httputil.ReverseProxy → upstream
+                              └─ resilient transport: circuit breaker + retries
 ```
 
 `/healthz` and `/metrics` bypass auth and rate limiting.
@@ -97,6 +101,21 @@ clients:
   - { api_key: "demo-pro-key",  name: "globex-pro", plan: pro }
 ```
 
+Per-upstream resilience is opt-in:
+
+```yaml
+upstreams:
+  - name: sms-service
+    target: "http://localhost:9001"
+    timeout: 3s
+    retry:
+      max_attempts: 2       # extra attempts for GET/HEAD, exponential backoff
+      backoff: 50ms
+    circuit_breaker:
+      failure_threshold: 5  # open after 5 consecutive failures
+      cooldown: 5s          # then one half-open trial probes recovery
+```
+
 Config is validated on startup: unknown upstream/plan references, bad targets
 or durations, and duplicate keys are rejected with a clear error.
 
@@ -113,6 +132,11 @@ or durations, and duplicate keys are rejected with a clear error.
 - **Fail open** — if the limiter backend is unreachable the request is allowed
   (and logged), so a Redis blip degrades metering rather than taking the API
   down.
+- **Circuit breaker over blind retries** — retrying a hard-down upstream just
+  adds load. The breaker trips after consecutive failures and fails fast with
+  `503`, then probes recovery with a single half-open trial. Retries only
+  cover *transient* blips, and only for safe (GET/HEAD) requests so there is
+  never a body to replay.
 - **Graceful shutdown** — on SIGTERM the server stops accepting connections
   and lets in-flight requests finish within a deadline.
 
@@ -134,8 +158,9 @@ go test -race ./...
 
 Covers config validation, both rate-limiter backends (the Redis/Lua path runs
 against an in-process [miniredis](https://github.com/alicebob/miniredis)),
-API-key auth, and proxy routing/method handling. CI runs gofmt, vet, build and
-the race-enabled tests on every push.
+API-key auth, proxy routing/method handling, the circuit-breaker state machine
+and the retry/circuit behaviour end-to-end. CI runs gofmt, vet, build and the
+race-enabled tests on every push.
 
 ## Layout
 
@@ -147,6 +172,7 @@ internal/proxy     reverse-proxy router
 internal/middleware recovery, request-id, logging
 internal/auth      API-key → client/plan
 internal/ratelimit token bucket (memory + redis/lua) + middleware
+internal/breaker   circuit breaker state machine
 internal/metrics   Prometheus collectors
 internal/reqctx    per-request context shared across the chain
 loadtest/          load generator + vegeta targets

@@ -19,6 +19,8 @@ type Metrics struct {
 	duration       *prometheus.HistogramVec
 	rateLimited    *prometheus.CounterVec
 	upstreamErrors *prometheus.CounterVec
+	retries        *prometheus.CounterVec
+	circuitState   *prometheus.GaugeVec
 }
 
 // New creates and registers the gateway collectors.
@@ -43,8 +45,16 @@ func New() *Metrics {
 			Name: "gateway_upstream_errors_total",
 			Help: "Upstream errors, by upstream name.",
 		}, []string{"upstream"}),
+		retries: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "gateway_upstream_retries_total",
+			Help: "Upstream call retries, by upstream name.",
+		}, []string{"upstream"}),
+		circuitState: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "gateway_circuit_state",
+			Help: "Circuit breaker state by upstream (0=closed, 1=open, 2=half-open).",
+		}, []string{"upstream"}),
 	}
-	reg.MustRegister(m.requests, m.duration, m.rateLimited, m.upstreamErrors)
+	reg.MustRegister(m.requests, m.duration, m.rateLimited, m.upstreamErrors, m.retries, m.circuitState)
 	return m
 }
 
@@ -61,6 +71,16 @@ func (m *Metrics) RateLimited(client string) {
 // UpstreamError increments the upstream-error counter.
 func (m *Metrics) UpstreamError(upstream string) {
 	m.upstreamErrors.WithLabelValues(labelOrNone(upstream)).Inc()
+}
+
+// Retry increments the upstream-retry counter.
+func (m *Metrics) Retry(upstream string) {
+	m.retries.WithLabelValues(labelOrNone(upstream)).Inc()
+}
+
+// SetCircuitState records the current circuit-breaker state for an upstream.
+func (m *Metrics) SetCircuitState(upstream string, state int) {
+	m.circuitState.WithLabelValues(labelOrNone(upstream)).Set(float64(state))
 }
 
 type recorder struct {

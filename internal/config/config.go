@@ -50,9 +50,25 @@ type Server struct {
 
 // Upstream is a backend service the gateway can forward requests to.
 type Upstream struct {
-	Name    string   `yaml:"name"`
-	Target  string   `yaml:"target"`
-	Timeout Duration `yaml:"timeout"`
+	Name           string         `yaml:"name"`
+	Target         string         `yaml:"target"`
+	Timeout        Duration       `yaml:"timeout"`
+	Retry          Retry          `yaml:"retry"`
+	CircuitBreaker CircuitBreaker `yaml:"circuit_breaker"`
+}
+
+// Retry controls automatic retries of failed upstream calls. Only safe
+// (bodyless) requests are retried, to avoid replaying a request body.
+type Retry struct {
+	MaxAttempts int      `yaml:"max_attempts"` // extra attempts after the first; 0 disables
+	Backoff     Duration `yaml:"backoff"`      // base delay, doubled each attempt
+}
+
+// CircuitBreaker trips an upstream open after FailureThreshold consecutive
+// failures and rejects requests for Cooldown. A zero threshold disables it.
+type CircuitBreaker struct {
+	FailureThreshold int      `yaml:"failure_threshold"`
+	Cooldown         Duration `yaml:"cooldown"`
 }
 
 // Route maps an incoming path prefix to an upstream.
@@ -96,8 +112,15 @@ func (c *Config) applyDefaults() {
 		c.Server.WriteTimeout = Duration(10 * time.Second)
 	}
 	for i := range c.Upstreams {
-		if c.Upstreams[i].Timeout == 0 {
-			c.Upstreams[i].Timeout = Duration(5 * time.Second)
+		u := &c.Upstreams[i]
+		if u.Timeout == 0 {
+			u.Timeout = Duration(5 * time.Second)
+		}
+		if u.Retry.Backoff == 0 {
+			u.Retry.Backoff = Duration(50 * time.Millisecond)
+		}
+		if u.CircuitBreaker.FailureThreshold > 0 && u.CircuitBreaker.Cooldown == 0 {
+			u.CircuitBreaker.Cooldown = Duration(5 * time.Second)
 		}
 	}
 }
@@ -118,6 +141,12 @@ func (c *Config) validate() error {
 		parsed, err := url.Parse(u.Target)
 		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 			return fmt.Errorf("upstream %q has invalid target %q", u.Name, u.Target)
+		}
+		if u.Retry.MaxAttempts < 0 {
+			return fmt.Errorf("upstream %q has negative retry.max_attempts", u.Name)
+		}
+		if u.CircuitBreaker.FailureThreshold < 0 {
+			return fmt.Errorf("upstream %q has negative circuit_breaker.failure_threshold", u.Name)
 		}
 	}
 	if len(c.Routes) == 0 {

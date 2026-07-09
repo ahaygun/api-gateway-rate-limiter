@@ -2,6 +2,7 @@
 package proxy
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ahaygun/api-gateway-rate-limiter/internal/breaker"
 	"github.com/ahaygun/api-gateway-rate-limiter/internal/config"
 	"github.com/ahaygun/api-gateway-rate-limiter/internal/metrics"
 	"github.com/ahaygun/api-gateway-rate-limiter/internal/reqctx"
@@ -38,6 +40,15 @@ func New(cfg *config.Config, logger *slog.Logger, m *metrics.Metrics) (*Gateway,
 	}
 
 	g := &Gateway{logger: logger, metrics: m}
+
+	// Build one resilient transport (circuit breaker + retries) per upstream
+	// so routes sharing an upstream share its breaker state.
+	transports := make(map[string]http.RoundTripper, len(cfg.Upstreams))
+	for i := range cfg.Upstreams {
+		u := &cfg.Upstreams[i]
+		transports[u.Name] = g.buildTransport(u)
+	}
+
 	for _, r := range cfg.Routes {
 		up := upstreams[r.Upstream] // validated to exist in config.Load
 		target, err := url.Parse(up.Target)
@@ -46,12 +57,7 @@ func New(cfg *config.Config, logger *slog.Logger, m *metrics.Metrics) (*Gateway,
 		}
 
 		rp := httputil.NewSingleHostReverseProxy(target)
-		rp.Transport = &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			ResponseHeaderTimeout: up.Timeout.Std(),
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
-		}
+		rp.Transport = transports[up.Name]
 		rp.ErrorHandler = g.upstreamErrorHandler(up.Name)
 
 		methods := make(map[string]bool, len(r.Methods))
@@ -97,16 +103,59 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	best.proxy.ServeHTTP(w, r)
 }
 
+// buildTransport creates the resilient RoundTripper for one upstream: a base
+// transport with the configured timeout, optionally wrapped with a circuit
+// breaker and retries.
+func (g *Gateway) buildTransport(u *config.Upstream) http.RoundTripper {
+	base := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		ResponseHeaderTimeout: u.Timeout.Std(),
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+	}
+
+	var br *breaker.Breaker
+	if u.CircuitBreaker.FailureThreshold > 0 {
+		name := u.Name
+		br = breaker.New(u.CircuitBreaker.FailureThreshold, u.CircuitBreaker.Cooldown.Std(),
+			breaker.WithOnStateChange(func(s breaker.State) {
+				g.logger.Warn("circuit breaker state change", "upstream", name, "state", s.String())
+				if g.metrics != nil {
+					g.metrics.SetCircuitState(name, int(s))
+				}
+			}),
+		)
+		if g.metrics != nil {
+			g.metrics.SetCircuitState(name, int(breaker.Closed))
+		}
+	}
+
+	return &resilientTransport{
+		base:        base,
+		breaker:     br,
+		maxAttempts: u.Retry.MaxAttempts + 1,
+		backoff:     u.Retry.Backoff.Std(),
+		upstream:    u.Name,
+		metrics:     g.metrics,
+		sleep:       time.Sleep,
+	}
+}
+
 func (g *Gateway) upstreamErrorHandler(name string) func(http.ResponseWriter, *http.Request, error) {
 	return func(w http.ResponseWriter, r *http.Request, err error) {
+		status := http.StatusBadGateway
+		if errors.Is(err, errCircuitOpen) {
+			status = http.StatusServiceUnavailable
+		}
 		g.logger.Warn("upstream error",
 			"upstream", name,
 			"path", r.URL.Path,
+			"status", status,
 			"err", err,
 		)
 		if g.metrics != nil {
 			g.metrics.UpstreamError(name)
 		}
-		http.Error(w, "bad gateway", http.StatusBadGateway)
+		http.Error(w, http.StatusText(status), status)
 	}
 }

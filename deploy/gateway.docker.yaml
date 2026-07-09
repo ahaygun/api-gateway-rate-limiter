@@ -11,6 +11,12 @@ upstreams:
   - name: sms-service
     target: "http://upstream:9001"
     timeout: 3s
+    retry:
+      max_attempts: 2
+      backoff: 50ms
+    circuit_breaker:
+      failure_threshold: 5
+      cooldown: 5s
 
 routes:
   - path_prefix: /v1/sms

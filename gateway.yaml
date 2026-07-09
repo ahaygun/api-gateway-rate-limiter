@@ -11,6 +11,12 @@ upstreams:
   - name: sms-service
     target: "http://localhost:9001"
     timeout: 3s
+    retry:                 # only safe (GET/HEAD) requests are retried
+      max_attempts: 2      # extra attempts after the first
+      backoff: 50ms        # doubled each attempt
+    circuit_breaker:
+      failure_threshold: 5 # open after 5 consecutive failures
+      cooldown: 5s         # reject fast for 5s, then probe with one trial
 
 routes:
   - path_prefix: /v1/sms
