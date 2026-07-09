@@ -1,0 +1,2 @@
+GET http://localhost:8080/v1/sms/send
+X-API-Key: demo-pro-key

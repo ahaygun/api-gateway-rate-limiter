@@ -1,0 +1,34 @@
+server:
+  addr: ":8080"
+  read_timeout: 5s
+  write_timeout: 10s
+
+ratelimit:
+  backend: redis          # distributed limiting shared across gateway replicas
+  redis_addr: "redis:6379"
+
+upstreams:
+  - name: sms-service
+    target: "http://upstream:9001"
+    timeout: 3s
+
+routes:
+  - path_prefix: /v1/sms
+    upstream: sms-service
+    methods: [GET, POST]
+
+plans:
+  free:
+    rate: 5
+    burst: 10
+  pro:
+    rate: 100
+    burst: 200
+
+clients:
+  - api_key: "demo-free-key"
+    name: "acme-free"
+    plan: free
+  - api_key: "demo-pro-key"
+    name: "globex-pro"
+    plan: pro

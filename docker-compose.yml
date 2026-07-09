@@ -1,0 +1,24 @@
+services:
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 5
+
+  upstream:
+    build: .
+    command: ["/usr/local/bin/upstream", "--addr", ":9001", "--name", "sms-service"]
+
+  gateway:
+    build: .
+    depends_on:
+      redis:
+        condition: service_healthy
+      upstream:
+        condition: service_started
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./deploy/gateway.docker.yaml:/etc/gateway/gateway.yaml:ro
