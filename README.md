@@ -1,5 +1,7 @@
 # api-gateway-rate-limiter
 
+*English · [Türkçe](README.tr.md)*
+
 A small but production-shaped **API gateway** written in Go. It sits in front of
 backend services and applies the cross-cutting concerns an operator needs to
 safely expose developer APIs: routing, authentication, **per-client rate
@@ -178,3 +180,7 @@ internal/reqctx    per-request context shared across the chain
 loadtest/          load generator + vegeta targets
 deploy/            Docker/compose config
 ```
+
+## License
+
+[MIT](LICENSE) © Ahmet Hasan Aygün
