@@ -142,6 +142,32 @@ or durations, and duplicate keys are rejected with a clear error.
 - **Graceful shutdown** — on SIGTERM the server stops accepting connections
   and lets in-flight requests finish within a deadline.
 
+## Observability
+
+The gateway exposes Prometheus metrics at `/metrics`. A ready-to-run stack under
+[`deploy/observability/`](deploy/observability/) wires those metrics into
+Prometheus and a provisioned Grafana dashboard, and drives the gateway with a
+small load generator so the panels fill with live traffic:
+
+```bash
+docker compose -f deploy/observability/docker-compose.yml up --build
+# Grafana:    http://localhost:3000   (anonymous admin, no login)
+# Prometheus: http://localhost:9090
+```
+
+**Steady state** — ~115 req/s split across the pro plan (`200`s) and the free
+plan hitting its limit (`429`s), p99 latency in single-digit milliseconds, the
+circuit closed:
+
+![Gateway dashboard under load](docs/grafana-dashboard.png)
+
+**Fault injection** — the mock upstream is stopped mid-traffic. The circuit
+breaker trips (state `0 → 1`), so requests fail fast with `503` instead of
+piling up on a dead backend and latency spikes only briefly; when the upstream
+returns the breaker closes again (`1 → 0`) and `200`s resume on their own:
+
+![Circuit breaker tripping and recovering](docs/grafana-circuit-breaker.png)
+
 ## Performance
 
 Built-in load generator, proxy path, everything co-located on one laptop:

@@ -1,0 +1,81 @@
+# Self-contained observability demo: the full gateway stack plus Prometheus,
+# Grafana and a small load generator, so the dashboard fills with live traffic.
+#
+#   docker compose -f deploy/observability/docker-compose.yml up --build
+#
+# Then open Grafana at http://localhost:3000 (anonymous admin, no login needed).
+# The gateway is published on host :8081 here to avoid colliding with anything
+# already bound to :8080; internally everything talks over the compose network.
+services:
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 5
+
+  upstream:
+    build: ../..
+    entrypoint: ["/usr/local/bin/upstream"]
+    command: ["--addr", ":9001", "--name", "sms-service"]
+
+  gateway:
+    build: ../..
+    depends_on:
+      redis:
+        condition: service_healthy
+      upstream:
+        condition: service_started
+    ports:
+      - "8081:8080"
+    volumes:
+      - ../gateway.docker.yaml:/etc/gateway/gateway.yaml:ro
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    depends_on:
+      - gateway
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    depends_on:
+      - prometheus
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+      - GF_AUTH_BASIC_ENABLED=false
+      - GF_USERS_DEFAULT_THEME=dark
+      - GF_USERS_HOME_PAGE=/d/api-gateway/api-gateway
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+
+  # Continuous mixed traffic: a steady stream on the pro plan (mostly 200s)
+  # plus a trickle on the free plan (burst spent quickly -> 429s), so the
+  # request-by-status and rate-limit panels both come alive.
+  loadgen:
+    image: curlimages/curl:8.11.1
+    depends_on:
+      - gateway
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        sleep 8
+        echo "loadgen: generating traffic against gateway:8080"
+        while true; do
+          for i in $$(seq 1 12); do
+            curl -s -o /dev/null -H "X-API-Key: demo-pro-key" http://gateway:8080/v1/sms/send &
+          done
+          curl -s -o /dev/null -H "X-API-Key: demo-free-key" http://gateway:8080/v1/sms/send &
+          curl -s -o /dev/null -H "X-API-Key: demo-free-key" http://gateway:8080/v1/sms/send &
+          wait
+          sleep 0.1
+        done

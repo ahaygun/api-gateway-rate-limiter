@@ -143,6 +143,32 @@ target veya süreler ve tekrarlanan anahtarlar açık bir hatayla reddedilir.
 - **Graceful shutdown** — SIGTERM'de sunucu yeni bağlantı kabul etmeyi durdurur
   ve akıştaki istekleri bir süre içinde bitirmelerine izin verir.
 
+## Gözlemlenebilirlik
+
+Gateway, Prometheus metriklerini `/metrics` üzerinden sunar.
+[`deploy/observability/`](deploy/observability/) altındaki hazır yığın bu
+metrikleri Prometheus'a ve provision edilmiş bir Grafana dashboard'una bağlar,
+ayrıca küçük bir load generator ile gateway'e trafik sürerek panelleri canlı
+verilerle doldurur:
+
+```bash
+docker compose -f deploy/observability/docker-compose.yml up --build
+# Grafana:    http://localhost:3000   (anonim admin, giriş yok)
+# Prometheus: http://localhost:9090
+```
+
+**Kararlı durum** — pro plan (`200`ler) ile limitine takılan free plan (`429`lar)
+arasında bölünmüş ~115 req/s, tek haneli milisaniye p99 gecikmesi, kapalı devre:
+
+![Yük altında gateway dashboard'u](docs/grafana-dashboard.png)
+
+**Arıza enjeksiyonu** — sahte upstream trafik akarken durdurulur. Circuit breaker
+açılır (durum `0 → 1`), böylece istekler ölü bir backend üzerinde birikmek yerine
+`503` ile hızlıca başarısız olur ve gecikme yalnızca kısa süre sıçrar; upstream
+geri geldiğinde devre kendiliğinden kapanır (`1 → 0`) ve `200`ler döner:
+
+![Circuit breaker'ın açılıp toparlanması](docs/grafana-circuit-breaker.png)
+
 ## Performans
 
 Dahili load generator, proxy yolu, her şey tek laptopta bir arada:

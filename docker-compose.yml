@@ -9,7 +9,8 @@ services:
 
   upstream:
     build: .
-    command: ["/usr/local/bin/upstream", "--addr", ":9001", "--name", "sms-service"]
+    entrypoint: ["/usr/local/bin/upstream"]
+    command: ["--addr", ":9001", "--name", "sms-service"]
 
   gateway:
     build: .
